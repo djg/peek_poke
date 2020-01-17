@@ -8,6 +8,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+#![allow(clippy::let_and_return)]
+
 //! Fast binary serialization and deserialization for types with a known maximum size.
 //!
 //! ## Binary Encoding Scheme
@@ -38,6 +40,15 @@ pub const fn max(a: usize, b: usize) -> usize {
 
 /// Peek helper for constructing a `T` by `Copy`ing into an uninitialized stack
 /// allocation.
+///
+/// # Safety
+///
+/// This function is unsafe because undefined behavior can result if the
+/// caller does not ensure all of the following:
+///
+/// * `bytes` must denote a valid pointer to a block of memory.
+///
+/// * `bytes` must point to at least the number of bytes `Poke::MAX_SIZE`.
 pub unsafe fn peek_from_uninit<T: Copy + Peek>(bytes: *const u8) -> (T, *const u8) {
     let mut val = MaybeUninitShim { uninit: () };
     let bytes = <T>::peek_from(bytes, &mut val.init);
@@ -46,6 +57,15 @@ pub unsafe fn peek_from_uninit<T: Copy + Peek>(bytes: *const u8) -> (T, *const u
 
 /// Peek helper for constructing a `T` by `Default` initialized stack
 /// allocation.
+///
+/// # Safety
+///
+/// This function is unsafe because undefined behavior can result if the
+/// caller does not ensure all of the following:
+///
+/// * `bytes` must denote a valid pointer to a block of memory.
+///
+/// * `bytes` must point to at least the number of bytes `Poke::MAX_SIZE`.
 pub unsafe fn peek_from_default<T: Default + Peek>(bytes: *const u8) -> (T, *const u8) {
     let mut val = T::default();
     let bytes = <T>::peek_from(bytes, &mut val);
@@ -376,7 +396,7 @@ macro_rules! impl_for_arrays {
 }
 
 impl_for_arrays! {
-    01 02 03 04 05 06 07 08 09 10
+     1  2  3  4  5  6  7  8  9 10
     11 12 13 14 15 16 17 18 19 20
     21 22 23 24 25 26 27 28 29 30
     31 32
