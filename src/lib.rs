@@ -19,8 +19,8 @@
 #[cfg(feature = "derive")]
 pub use peek_poke_derive::*;
 
-use core::{marker::PhantomData, mem::size_of, slice};
 use crate::{slice_ext::*, vec_ext::*};
+use core::{marker::PhantomData, mem::size_of, slice};
 
 mod slice_ext;
 mod vec_ext;
@@ -28,6 +28,12 @@ mod vec_ext;
 union MaybeUninitShim<T: Copy> {
     uninit: (),
     init: T,
+}
+
+/// Helper function that implements `max` as a `const fn` for use in
+/// implementing `const MAX_SIZE` for enums.
+pub const fn max(a: usize, b: usize) -> usize {
+    [a, b][(a < b) as usize]
 }
 
 /// Peek helper for constructing a `T` by `Copy`ing into an uninitialized stack
@@ -47,16 +53,19 @@ pub unsafe fn peek_from_default<T: Default + Peek>(bytes: *const u8) -> (T, *con
 }
 
 /// Peek inplace a `T` from a slice of bytes, returning a slice of the remaining
-/// bytes. `src` must contain at least `T::max_size()` bytes.
+/// bytes. `src` must contain at least `T::MAX_SIZE` bytes.
 ///
 /// [`ensure_red_zone`] can be used to add required padding.
 pub fn peek_from_slice<'a, T: Peek>(src: &'a [u8], dst: &mut T) -> &'a [u8] {
     unsafe {
-        // If src.len() == T::max_size() then src is at the start of the red-zone.
-        assert!(T::max_size() < src.len(), "WRDL: unexpected end of display list");
+        // If src.len() == T::MAX_SIZE then src is at the start of the red-zone.
+        assert!(
+            T::MAX_SIZE < src.len(),
+            "WRDL: unexpected end of display list"
+        );
         let end_ptr = T::peek_from(src.as_ptr(), dst);
         let len = end_ptr as usize - src.as_ptr() as usize;
-        // Did someone break the T::peek_from() can't read more than T::max_size()
+        // Did someone break the T::peek_from() can't read more than T::MAX_SIZE
         // bytes contract?
         assert!(len <= src.len(), "WRDL: Peek::max_size was wrong");
         slice::from_raw_parts(end_ptr, src.len() - len)
@@ -65,7 +74,10 @@ pub fn peek_from_slice<'a, T: Peek>(src: &'a [u8], dst: &mut T) -> &'a [u8] {
 
 /// Poke helper to insert a serialized version of `src` at the beginning for `dst`.
 pub fn poke_inplace_slice<T: Poke>(src: &T, dst: &mut [u8]) {
-    assert!(T::max_size() <= dst.len(),  "WRDL: buffer too small to write into");
+    assert!(
+        T::MAX_SIZE <= dst.len(),
+        "WRDL: buffer too small to write into"
+    );
     unsafe {
         src.poke_into(dst.as_mut_ptr());
     }
@@ -73,7 +85,7 @@ pub fn poke_inplace_slice<T: Poke>(src: &T, dst: &mut [u8]) {
 
 /// Poke helper to append a serialized version of `src` to the end of `dst`.
 pub fn poke_into_vec<T: Poke>(src: &T, dst: &mut Vec<u8>) {
-    dst.reserve(T::max_size());
+    dst.reserve(T::MAX_SIZE);
     unsafe {
         let ptr = dst.as_end_mut_ptr();
         let end_ptr = src.poke_into(ptr);
@@ -88,7 +100,7 @@ where
     I::Item: Poke,
 {
     let len = src.len();
-    let max_size = len * I::Item::max_size();
+    let max_size = len * I::Item::MAX_SIZE;
     dst.reserve(max_size);
     unsafe {
         let ptr = dst.as_end_mut_ptr();
@@ -101,15 +113,15 @@ where
     len
 }
 
-/// Add `T::max_size()` "red zone" (padding of zeroes) to the end of the vec of
-/// `bytes`. This allows deserialization to assert that at least `T::max_size()`
+/// Add `T::MAX_SIZE` "red zone" (padding of zeroes) to the end of the vec of
+/// `bytes`. This allows deserialization to assert that at least `T::MAX_SIZE`
 /// bytes exist at all times.
 pub fn ensure_red_zone<T: Poke>(bytes: &mut Vec<u8>) {
-    bytes.reserve(T::max_size());
+    bytes.reserve(T::MAX_SIZE);
     unsafe {
         let end_ptr = bytes.as_end_mut_ptr();
-        end_ptr.write_bytes(0, T::max_size());
-        bytes.set_end_ptr(end_ptr.add(T::max_size()));
+        end_ptr.write_bytes(0, T::MAX_SIZE);
+        bytes.set_end_ptr(end_ptr.add(T::MAX_SIZE));
     }
 }
 
@@ -142,9 +154,8 @@ mod euclid;
 /// }
 ///
 /// unsafe impl Poke for Bar {
-///     fn max_size() -> usize {
-///         <u32>::max_size() + <u8>::max_size() + <i16>::max_size()
-///     }
+///     const MAX_SIZE: usize = u32::MAX_SIZE + u8::MAX_SIZE + i16::MAX_SIZE;
+///
 ///     unsafe fn poke_into(&self, bytes: *mut u8) -> *mut u8 {
 ///         let bytes = self.a.poke_into(bytes);
 ///         let bytes = self.b.poke_into(bytes);
@@ -158,7 +169,7 @@ mod euclid;
 /// The `Poke` trait is an `unsafe` trait for the reasons, and implementors must
 /// ensure that they adhere to these contracts:
 ///
-/// * `max_size()` query and calculations in general must be correct.  Callers
+/// * `MAX_SIZE` query and calculations in general must be correct.  Callers
 ///    of this trait are expected to rely on the contract defined on each
 ///    method, and implementors must ensure such contracts remain true.
 pub unsafe trait Poke {
@@ -167,10 +178,11 @@ pub unsafe trait Poke {
     ///
     /// # Safety
     ///
-    /// Implementors of `Poke` guarantee to not write more than the result of
-    /// calling `max_size()` into the buffer pointed to by `bytes` when
-    /// `poke_into()` is called.
-    fn max_size() -> usize;
+    /// Implementors of `Poke` guarantee to not write more than the value of
+    /// `MAX_SIZE` into the buffer pointed to by `bytes` when `poke_into()` is
+    /// called.
+    const MAX_SIZE: usize;
+
     /// Serialize into the buffer pointed to by `bytes`.
     ///
     /// Returns a pointer to the next byte after the serialized representation of `Self`.
@@ -182,8 +194,7 @@ pub unsafe trait Poke {
     ///
     /// * `bytes` must denote a valid pointer to a block of memory.
     ///
-    /// * `bytes` must pointer to at least the number of bytes returned by
-    ///   `max_size()`.
+    /// * `bytes` must point to at least the number of bytes `MAX_SIZE`.
     unsafe fn poke_into(&self, bytes: *mut u8) -> *mut u8;
 }
 
@@ -218,7 +229,7 @@ pub unsafe trait Poke {
 ///
 /// * Callers of this trait are expected to rely on the contract defined on each
 ///   method, and implementors must ensure that `peek_from()` doesn't read more
-///   bytes from `bytes` than is returned by `Peek::max_size()`.
+///   bytes from `bytes` than the value `Peek::MAX_SIZE`.
 pub trait Peek: Poke {
     /// Deserialize from the buffer pointed to by `bytes`.
     ///
@@ -232,18 +243,15 @@ pub trait Peek: Poke {
     ///
     /// * `bytes` must denote a valid pointer to a block of memory.
     ///
-    /// * `bytes` must pointer to at least the number of bytes returned by
-    ///   `Poke::max_size()`.
+    /// * `bytes` must point to at least the number of bytes `Poke::MAX_SIZE`.
     unsafe fn peek_from(bytes: *const u8, output: *mut Self) -> *const u8;
 }
 
 macro_rules! impl_poke_for_deref {
     (<$($desc:tt)+) => {
         unsafe impl <$($desc)+ {
-            #[inline(always)]
-            fn max_size() -> usize {
-                <T>::max_size()
-            }
+            const MAX_SIZE: usize = T::MAX_SIZE;
+
             unsafe fn poke_into(&self, bytes: *mut u8) -> *mut u8 {
                 (**self).poke_into(bytes)
             }
@@ -257,10 +265,8 @@ impl_poke_for_deref!(<'a, T: Poke> Poke for &'a mut T);
 macro_rules! impl_for_primitive {
     ($($ty:ty)+) => {
         $(unsafe impl Poke for $ty {
-            #[inline(always)]
-            fn max_size() -> usize {
-                size_of::<Self>()
-            }
+            const MAX_SIZE: usize = size_of::<Self>();
+
             #[inline(always)]
             unsafe fn poke_into(&self, bytes: *mut u8) -> *mut u8 {
                 write_verbatim(*self, bytes)
@@ -282,10 +288,8 @@ impl_for_primitive! {
 }
 
 unsafe impl Poke for bool {
-    #[inline(always)]
-    fn max_size() -> usize {
-        u8::max_size()
-    }
+    const MAX_SIZE: usize = u8::MAX_SIZE;
+
     #[inline]
     unsafe fn poke_into(&self, bytes: *mut u8) -> *mut u8 {
         (*self as u8).poke_into(bytes)
@@ -303,10 +307,8 @@ impl Peek for bool {
 }
 
 unsafe impl<T> Poke for PhantomData<T> {
-    #[inline(always)]
-    fn max_size() -> usize {
-        0
-    }
+    const MAX_SIZE: usize = 0;
+
     #[inline(always)]
     unsafe fn poke_into(&self, bytes: *mut u8) -> *mut u8 {
         bytes
@@ -322,10 +324,7 @@ impl<T> Peek for PhantomData<T> {
 }
 
 unsafe impl<T: Poke> Poke for Option<T> {
-    #[inline(always)]
-    fn max_size() -> usize {
-        u8::max_size() + T::max_size()
-    }
+    const MAX_SIZE: usize = u8::MAX_SIZE + T::MAX_SIZE;
 
     #[inline]
     unsafe fn poke_into(&self, bytes: *mut u8) -> *mut u8 {
@@ -362,9 +361,8 @@ impl<T: Default + Peek> Peek for Option<T> {
 macro_rules! impl_for_arrays {
     ($($len:tt)+) => {
         $(unsafe impl<T: Poke> Poke for [T; $len] {
-            fn max_size() -> usize {
-                $len * T::max_size()
-            }
+            const MAX_SIZE: usize = $len * T::MAX_SIZE;
+
             unsafe fn poke_into(&self, bytes: *mut u8) -> *mut u8 {
                 self.iter().fold(bytes, |bytes, e| e.poke_into(bytes))
             }
@@ -385,9 +383,8 @@ impl_for_arrays! {
 }
 
 unsafe impl Poke for () {
-    fn max_size() -> usize {
-        0
-    }
+    const MAX_SIZE: usize = 0;
+
     unsafe fn poke_into(&self, bytes: *mut u8) -> *mut u8 {
         bytes
     }
@@ -402,10 +399,8 @@ impl Peek for () {
 macro_rules! impl_for_tuple {
     ($($n:tt: $ty:ident),+) => {
         unsafe impl<$($ty: Poke),+> Poke for ($($ty,)+) {
-            #[inline(always)]
-            fn max_size() -> usize {
-                0 $(+ <$ty>::max_size())+
-            }
+            const MAX_SIZE: usize = 0 $(+ <$ty>::MAX_SIZE)+;
+
             unsafe fn poke_into(&self, bytes: *mut u8) -> *mut u8 {
                 $(let bytes = self.$n.poke_into(bytes);)+
                 bytes
